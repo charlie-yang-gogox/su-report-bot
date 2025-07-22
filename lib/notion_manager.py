@@ -260,7 +260,18 @@ class NotionManager:
             history_pages = {}
             
             for page in notion_pages.get("results", []):
-                key = page["properties"][PROPERTY_NAMES["TICKET"]]["title"][0]["text"]["content"]
+                # 安全地獲取 ticket key
+                ticket_property = page["properties"].get(PROPERTY_NAMES["TICKET"])
+                if not ticket_property or "title" not in ticket_property:
+                    logger.warning(f"Skipping page {page.get('id', 'unknown')}: Missing ticket property")
+                    continue
+                
+                title_array = ticket_property["title"]
+                if not title_array or len(title_array) == 0:
+                    logger.warning(f"Skipping page {page.get('id', 'unknown')}: Empty title array")
+                    continue
+                
+                key = title_array[0]["text"]["content"]
                 if key in current_sprint_tickets:
                     current_pages[key] = page
                 else:
