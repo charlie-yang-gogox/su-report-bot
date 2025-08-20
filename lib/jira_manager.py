@@ -26,25 +26,45 @@ class JiraManager:
         
     def get_tickets(self):
         """Get tickets from Jira API using custom JQL query"""
-        jira_api_url = "https://gogotech.atlassian.net/rest/api/3/search"
+        jira_api_url = "https://gogotech.atlassian.net/rest/api/3/search/jql"
         
         # Construct JQL query using user_ids
         user_ids_str = " OR ".join([f'assignee = "{user_id}"' for user_id in self.user_ids])
         jql = f'({user_ids_str}) AND sprint in openSprints() AND type != Sub-task ORDER BY created DESC'
         
-        params = {"jql": jql}
+        # Use POST method with JSON payload as per latest documentation
+        # Need to specify fields to return
+        payload = {
+            "jql": jql,
+            "fields": [
+                "summary", 
+                "status", 
+                "assignee", 
+                "customfield_10008",  # Sprint field
+                "customfield_10027",  # Story points field
+                "issuetype", 
+                "parent",
+                "labels"  # Tags field
+            ]
+        }
         
-        response = requests.get(jira_api_url, headers=self._headers, params=params)
+        response = requests.post(jira_api_url, headers=self._headers, json=payload)
         response.raise_for_status()
         data = response.json()
+        
+        # Check if response has the expected format
+        if "issues" not in data or not isinstance(data["issues"], list):
+            logger.error(f"Unexpected response format: {data}")
+            raise ValueError("Response does not contain 'issues' list")
         
         # Get unique active sprints from the response
         active_sprints = set()
         for issue in data["issues"]:
-            sprints = issue["fields"].get("customfield_10008", [])
-            for sprint in sprints:
-                if sprint["state"] == "active":
-                    active_sprints.add(sprint["name"])
+            if isinstance(issue, dict) and "fields" in issue:
+                sprints = issue["fields"].get("customfield_10008", [])
+                for sprint in sprints:
+                    if sprint["state"] == "active":
+                        active_sprints.add(sprint["name"])
         
         # Log outputs
         logger.info("="*50)
@@ -60,6 +80,11 @@ class JiraManager:
         filtered_issues = []
         
         for issue in data["issues"]:
+            # Check if issue has the expected format
+            if not isinstance(issue, dict) or "fields" not in issue:
+                logger.warning(f"Skipping issue with unexpected format: {issue}")
+                continue
+                
             fields = issue["fields"]
             key = issue["key"]
             summary = fields["summary"]
@@ -131,8 +156,13 @@ class JiraManager:
         
     def __get_tag_from_issue(self, issue):
         """Get tag from issue based on its type and parent"""
+        if not isinstance(issue, dict) or "fields" not in issue:
+            return "Unknown"
+            
         fields = issue["fields"]
         if fields["issuetype"]["name"] == "Story":
-            return f"Feat - {fields['parent']['fields']['summary']}" if "parent" in fields else ""
+            tag = f"Feat - {fields['parent']['fields']['summary']}" if "parent" in fields else ""
+            return tag
 
-        return TYPE_TO_TAG_MAPPING.get(fields["issuetype"]["name"], fields["issuetype"]["name"])
+        tag = TYPE_TO_TAG_MAPPING.get(fields["issuetype"]["name"], fields["issuetype"]["name"])
+        return tag

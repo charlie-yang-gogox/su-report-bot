@@ -178,7 +178,8 @@ class NotionManager:
                 ticket["story_points"],
                 ticket["active_sprints"],  # Pass Jira sprint list
                 page["properties"][PROPERTY_NAMES["OWNER"]]["select"]["name"],  # Keep existing owner
-                url
+                url,
+                ticket["tag"]  # Add tag parameter
             )
             
             # Preserve existing tags
