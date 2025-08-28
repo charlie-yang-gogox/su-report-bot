@@ -14,9 +14,18 @@ TYPE_TO_TAG_MAPPING = {
 }
 
 class JiraManager:
-    def __init__(self, ids, user_name, token):
+    def __init__(self, users, user_name, token):
         """Initialize JiraManager with authentication details"""
-        self.user_ids = json.loads(ids)
+        # Extract jira_user_ids from the new users structure
+        if isinstance(users, list):
+            self.user_ids = [user.get("jira_user_id") for user in users if user.get("jira_user_id")]
+        else:
+            # Fallback for old format
+            try:
+                self.user_ids = json.loads(users) if isinstance(users, str) else users
+            except (json.JSONDecodeError, TypeError):
+                self.user_ids = []
+        
         self.user_name = user_name
         self.token = token
         self._headers = {

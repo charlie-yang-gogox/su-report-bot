@@ -37,17 +37,48 @@ class NotionManager:
             "Content-Type": "application/json"
         }
 
-    def get_notion_work_record(self, sprint_name):
-        """Get work records from Notion database for a specific sprint"""
-        logger.info(f"Getting work records for sprint: {sprint_name}")
+    def get_notion_work_record(self, sprint_name, owner=None):
+        """Get work records from Notion database for a specific sprint and optionally filter by owner"""
+        logger.info(f"Getting work records for sprint: {sprint_name}" + (f" and owner: {owner}" if owner else ""))
         notion_query_url = f"https://api.notion.com/v1/databases/{self.database_id}/query"
         
-        search_payload = {
-            "filter": {
-                "property": "Sprint",
-                "select": {"equals": sprint_name}
+        # Build filter based on parameters
+        filters = []
+        
+        # Sprint filter
+        filters.append({
+            "property": "Sprint",
+            "select": {"equals": sprint_name}
+        })
+        
+        # Owner filter (if provided)
+        if owner:
+            filters.append({
+                "property": "Owner",
+                "select": {"equals": owner}
+            })
+        
+        # Combine filters with AND logic
+        if len(filters) == 1:
+            search_payload = {"filter": filters[0]}
+        else:
+            search_payload = {
+                "filter": {
+                    "and": filters
+                }
             }
-        }
+        
+        response = requests.post(notion_query_url, headers=self.notion_headers, json=search_payload)
+        response.raise_for_status()
+        return self.__format_record(response.json())
+
+    def get_all_records(self):
+        """Get all records from Notion database"""
+        logger.info("Getting all records from Notion database")
+        notion_query_url = f"https://api.notion.com/v1/databases/{self.database_id}/query"
+        
+        # Query all records without filters
+        search_payload = {}
         
         response = requests.post(notion_query_url, headers=self.notion_headers, json=search_payload)
         response.raise_for_status()
@@ -57,17 +88,72 @@ class NotionManager:
         """Format Notion work record into a standardized format"""
         formatted_work_records = []
         for record in work_record["results"]:
-            jira_id = record["properties"]["Jira Id"]["rich_text"][0]["text"]["content"]
-            title = record["properties"]["Title"]["title"][0]["text"]["content"]
-            status = record["properties"]["Status"]["select"]["name"]
-            jira_url = f"https://gogotech.atlassian.net/browse/{jira_id}"
+            # Debug: Log available properties for first record
+            if len(formatted_work_records) == 0:
+                logger.debug(f"Available properties: {list(record['properties'].keys())}")
+            
+            # Use correct property names from PROPERTY_NAMES constants
+            ticket_property = record["properties"].get(PROPERTY_NAMES["TICKET"])
+            title_property = record["properties"].get(PROPERTY_NAMES["TITLE"])
+            status_property = record["properties"].get(PROPERTY_NAMES["STATUS"])
+            owner_property = record["properties"].get(PROPERTY_NAMES["OWNER"])
+            sprint_property = record["properties"].get(PROPERTY_NAMES["SPRINT"])
+            tags_property = record["properties"].get(PROPERTY_NAMES["TAGS"])
+            
+            # Safely extract values with error handling
+            try:
+                if ticket_property and "title" in ticket_property and ticket_property["title"]:
+                    jira_id = ticket_property["title"][0]["text"]["content"]
+                else:
+                    logger.warning(f"Missing or invalid ticket property in record: {record.get('id', 'unknown')}")
+                    continue
+                    
+                if title_property and "rich_text" in title_property and title_property["rich_text"]:
+                    title = title_property["rich_text"][0]["text"]["content"]
+                else:
+                    title = "No Title"
+                    
+                if status_property and "select" in status_property and status_property["select"]:
+                    status = status_property["select"]["name"]
+                else:
+                    status = "Unknown Status"
+                    
+                if owner_property and "select" in owner_property and owner_property["select"]:
+                    owner = owner_property["select"]["name"]
+                else:
+                    owner = "Unassigned"
+                
+                # Extract sprint from select property
+                sprint = None
+                if sprint_property and "select" in sprint_property and sprint_property["select"]:
+                    sprint = sprint_property["select"]["name"]
+                    logger.debug(f"Extracted sprint for {jira_id}: {sprint}")
+                else:
+                    logger.debug(f"No sprint found for {jira_id}, sprint_property: {sprint_property}")
+                    
+                # Extract tags from select property (not multi_select)
+                tags = []
+                if tags_property and "select" in tags_property and tags_property["select"]:
+                    tags = [tags_property["select"]["name"]]
+                    logger.debug(f"Extracted tag for {jira_id}: {tags}")
+                else:
+                    logger.debug(f"No tag found for {jira_id}, tags_property: {tags_property}")
+                    
+                jira_url = f"https://gogotech.atlassian.net/browse/{jira_id}"
 
-            formatted_work_records.append({
-                "jiraId": jira_id,
-                "title": title,
-                "status": status,
-                "jiraUrl": jira_url
-            })
+                formatted_work_records.append({
+                    "jiraId": jira_id,
+                    "title": title,
+                    "status": status,
+                    "owner": owner,
+                    "sprint": sprint,
+                    "tags": tags,
+                    "jiraUrl": jira_url
+                })
+                
+            except (KeyError, IndexError, TypeError) as e:
+                logger.error(f"Error processing record {record.get('id', 'unknown')}: {e}")
+                continue
 
         formatted_work_records.sort(key=lambda x: x["status"])
         return formatted_work_records
