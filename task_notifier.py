@@ -26,7 +26,8 @@ def _format_records(records):
     lines = []
     for record in records:
         ticket_link = f"<{record['jiraUrl']}|{record['jiraId']}>"
-        lines.append(f"{ticket_link} *{record['title']}*")
+        status = record.get("status", "")
+        lines.append(f"- {ticket_link} *{record['title']}* `{status}`")
     return "\n".join(lines)
 
 def _build_report(ongoing, completed):
