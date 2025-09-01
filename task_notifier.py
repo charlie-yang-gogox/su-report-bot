@@ -25,17 +25,18 @@ except (json.JSONDecodeError, TypeError) as e:
 def _format_records(records):
     lines = []
     for record in records:
-        lines.append(f"[{record['jiraId']}]({record['jiraUrl']}) {record['title']}")
+        ticket_link = f"<{record['jiraUrl']}|{record['jiraId']}>"
+        lines.append(f"{ticket_link} *{record['title']}*")
     return "\n".join(lines)
 
 def _build_report(ongoing, completed):
-    message = "Ongoing:\n"
+    message = "*Ongoing:*\n"
     if ongoing:
         message += _format_records(ongoing)
-    message += "\n\nCompleted:\n"
+    message += "\n\n*Completed:*\n"
     if completed:
         message += _format_records(completed)
-    message += "\n\nSummary:\n"
+    message += "\n\n*Summary:*\n"
     return message
 
 def main():
