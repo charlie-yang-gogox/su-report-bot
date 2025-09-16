@@ -227,6 +227,8 @@ class NotionManager:
             
             # Get sprint information
             sprints = data["fields"].get("customfield_10008", [])
+            if sprints is None:
+                sprints = []
             active_sprints = [sprint["name"] for sprint in sprints if sprint["state"] == "active"]
             
             return {
