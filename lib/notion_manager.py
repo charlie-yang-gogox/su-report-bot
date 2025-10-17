@@ -68,21 +68,51 @@ class NotionManager:
                 }
             }
         
-        response = requests.post(notion_query_url, headers=self.notion_headers, json=search_payload)
-        response.raise_for_status()
-        return self.__format_record(response.json())
+        # Handle pagination
+        all_results = []
+        has_more = True
+        next_cursor = None
+        
+        while has_more:
+            if next_cursor:
+                search_payload["start_cursor"] = next_cursor
+            
+            response = requests.post(notion_query_url, headers=self.notion_headers, json=search_payload)
+            response.raise_for_status()
+            data = response.json()
+            
+            all_results.extend(data.get("results", []))
+            has_more = data.get("has_more", False)
+            next_cursor = data.get("next_cursor")
+        
+        logger.debug(f"Retrieved {len(all_results)} work records")
+        return self.__format_record({"results": all_results})
 
     def get_all_records(self):
         """Get all records from Notion database"""
         logger.info("Getting all records from Notion database")
         notion_query_url = f"https://api.notion.com/v1/databases/{self.database_id}/query"
         
-        # Query all records without filters
+        # Query all records without filters, with pagination support
         search_payload = {}
+        all_results = []
+        has_more = True
+        next_cursor = None
         
-        response = requests.post(notion_query_url, headers=self.notion_headers, json=search_payload)
-        response.raise_for_status()
-        return self.__format_record(response.json())
+        while has_more:
+            if next_cursor:
+                search_payload["start_cursor"] = next_cursor
+            
+            response = requests.post(notion_query_url, headers=self.notion_headers, json=search_payload)
+            response.raise_for_status()
+            data = response.json()
+            
+            all_results.extend(data.get("results", []))
+            has_more = data.get("has_more", False)
+            next_cursor = data.get("next_cursor")
+        
+        logger.info(f"Retrieved total of {len(all_results)} records from Notion database")
+        return self.__format_record({"results": all_results})
 
     def __format_record(self, work_record):
         """Format Notion work record into a standardized format"""
@@ -253,7 +283,7 @@ class NotionManager:
             ticket = current_tickets[key]
             url = f"{JIRA_BASE_URL}/browse/{key}"
             
-            logger.info(f"Updating ticket in current sprint: {key}")
+            logger.info(f"Updating ticket: {key}")
             
             # Get existing tags from page
             existing_tags = page["properties"].get(PROPERTY_NAMES["TAGS"], {}).get("multi_select", [])
@@ -278,6 +308,7 @@ class NotionManager:
             self.__update_notion_page(page["id"], key, properties)
         
         # Create new pages for tickets that don't exist in Notion
+        new_tickets_count = 0
         for key, ticket in current_tickets.items():
             if key not in current_pages:
                 logger.info(f"Creating new ticket: {key}")
@@ -294,6 +325,10 @@ class NotionManager:
                 )
                 
                 self.__create_notion_page(key, properties)
+                new_tickets_count += 1
+        
+        if new_tickets_count > 0:
+            logger.info(f"Created {new_tickets_count} new tickets")
 
     def __sync_history_tickets(self, history_pages, jira_data):
         """Sync Notion pages that are not in current sprint with Jira data"""
@@ -337,11 +372,29 @@ class NotionManager:
         logger.info("Starting sync process...")
         
         try:
-            # Get all existing pages from Notion
+            # Get all existing pages from Notion with pagination support
             notion_query_url = f"{NOTION_BASE_URL}/databases/{self.database_id}/query"
-            response = requests.post(notion_query_url, headers=self.notion_headers, json={})
-            response.raise_for_status()
-            notion_pages = response.json()
+            all_results = []
+            has_more = True
+            next_cursor = None
+            
+            while has_more:
+                request_payload = {}
+                if next_cursor:
+                    request_payload["start_cursor"] = next_cursor
+                
+                response = requests.post(notion_query_url, headers=self.notion_headers, json=request_payload)
+                response.raise_for_status()
+                data = response.json()
+                
+                all_results.extend(data.get("results", []))
+                has_more = data.get("has_more", False)
+                next_cursor = data.get("next_cursor")
+            
+            logger.info(f"Retrieved {len(all_results)} existing records from Notion")
+            
+            # Create notion_pages structure compatible with existing code
+            notion_pages = {"results": all_results}
             
             # Create sets of current sprint and history pages
             current_sprint_tickets = {ticket["key"] for ticket in jira_data}
@@ -361,10 +414,13 @@ class NotionManager:
                     continue
                 
                 key = title_array[0]["text"]["content"]
+                
                 if key in current_sprint_tickets:
                     current_pages[key] = page
                 else:
                     history_pages[key] = page
+            
+            logger.info(f"Current sprint: {len(current_pages)} pages, History: {len(history_pages)} pages")
             
             # Sync with current sprint data
             self.__sync_current_tickets(current_pages, jira_data)
