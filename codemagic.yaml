@@ -1,7 +1,7 @@
 workflows:
   mobile-su-report-bot-ci:
     name: Mobile Su Report Bot CI
-    max_build_duration: 10
+    max_build_duration: 60
     environment:
       groups:
         - mobile
