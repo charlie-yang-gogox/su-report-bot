@@ -80,6 +80,7 @@ class NotionManager:
             response = requests.post(notion_query_url, headers=self.notion_headers, json=search_payload)
             response.raise_for_status()
             data = response.json()
+            fields = data.get("fields") or {}
             
             all_results.extend(data.get("results", []))
             has_more = data.get("has_more", False)
@@ -254,20 +255,27 @@ class NotionManager:
             )
             response.raise_for_status()
             data = response.json()
+            fields = data.get("fields") or {}
             
             # Get sprint information
-            sprints = data["fields"].get("customfield_10008", [])
+            sprints = fields.get("customfield_10008", [])
             if sprints is None:
                 sprints = []
             active_sprints = [sprint["name"] for sprint in sprints if sprint["state"] == "active"]
+            assignee = fields.get("assignee")
+            if assignee is None:
+                logger.warning(f"JIRA ticket {key} has no assignee field")
+            if not isinstance(assignee, dict):
+                logger.warning(f"JIRA ticket {key} assignee type is unexpected: {type(assignee).__name__}")
+                assignee = {}
             
             return {
                 "key": key,
-                "summary": data["fields"]["summary"],
-                "status": data["fields"]["status"]["name"],
-                "story_points": data["fields"].get("customfield_10027", 0),
+                "summary": fields.get("summary", ""),
+                "status": (fields.get("status") or {}).get("name", "Unknown"),
+                "story_points": fields.get("customfield_10027", 0),
                 "active_sprints": active_sprints,
-                "owner": data["fields"].get("assignee", {}).get("displayName", "Unassigned")
+                "owner": assignee.get("displayName", "Unassigned")
             }
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to get JIRA ticket {key}: {e}")
