@@ -82,7 +82,8 @@ def main():
         
         # Send reports for all users
         logger.info("Sending reports to Slack...")
-        slack_manager.send_report(jira_data, notion_records, JIRA_USERS, slack_token)
+        users = [{**u, "issue_user_id": u["jira_user_id"]} for u in JIRA_USERS]
+        slack_manager.send_report(jira_data, notion_records, users, slack_token)
         logger.info("Reports sent successfully")
 
         logger.info("SU Report Bot completed successfully")

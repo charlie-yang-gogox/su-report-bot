@@ -193,13 +193,13 @@ class SlackManager:
         
         # Process each user
         for user_config in jira_users:
-            jira_user_id = user_config.get("jira_user_id")
+            issue_user_id = user_config.get("issue_user_id")
             slack_user_id = user_config.get("slack_user_id")
             owner = user_config.get("name", "unknown")
-            
-            # Skip if jira_user_id is missing or slack_user_id is empty
-            if not jira_user_id or not slack_user_id:
-                self.logger.info(f"Skipping user {owner} - missing jira_user_id or slack_user_id")
+
+            # Skip if no issue tracker user ID or slack_user_id is empty
+            if not issue_user_id or not slack_user_id:
+                self.logger.info(f"Skipping user {owner} - missing issue_user_id or slack_user_id")
                 continue
                 
             try:

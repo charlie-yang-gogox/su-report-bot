@@ -21,21 +21,41 @@ PROPERTY_NAMES = {
 }
 
 class NotionManager:
-    def __init__(self, notion_token, database_id, jira_user_name, jira_token):
-        """Initialize NotionManager with authentication and configuration details"""
+    def __init__(self, notion_token, database_id, jira_user_name=None, jira_token=None,
+                 issue_base_url=None, history_ticket_fetcher=None):
+        """Initialize NotionManager with authentication and configuration details.
+
+        Args:
+            notion_token: Notion integration token
+            database_id: Target Notion database ID
+            jira_user_name: Jira username (only required when using Jira)
+            jira_token: Jira API token (only required when using Jira)
+            issue_base_url: Base URL for issue links, e.g.
+                "https://gogotech.atlassian.net/browse" (Jira default) or
+                "https://linear.app/myorg/issue" (Linear).
+                Issue URL is constructed as "{issue_base_url}/{key}".
+            history_ticket_fetcher: Optional callable(key: str) -> dict | None.
+                Used to fetch details for history tickets not in the current sprint.
+                If None, falls back to the built-in Jira API fetcher.
+        """
         self.notion_token = notion_token
         self.database_id = database_id
         self.jira_user_name = jira_user_name
         self.jira_token = jira_token
+        self.issue_base_url = issue_base_url or f"{JIRA_BASE_URL}/browse"
+        self.history_ticket_fetcher = history_ticket_fetcher or self.__get_jira_ticket
         self.notion_headers = {
             "Authorization": notion_token,
             "Content-Type": "application/json",
             "Notion-Version": NOTION_API_VERSION
         }
-        self.jira_headers = {
-            "Authorization": "Basic " + base64.b64encode(f"{jira_user_name}:{jira_token}".encode()).decode(),
-            "Content-Type": "application/json"
-        }
+        if jira_user_name and jira_token:
+            self.jira_headers = {
+                "Authorization": "Basic " + base64.b64encode(f"{jira_user_name}:{jira_token}".encode()).decode(),
+                "Content-Type": "application/json"
+            }
+        else:
+            self.jira_headers = {}
 
     def get_notion_work_record(self, sprint_name, owner=None):
         """Get work records from Notion database for a specific sprint and optionally filter by owner"""
@@ -170,7 +190,7 @@ class NotionManager:
                 else:
                     logger.debug(f"No tag found for {jira_id}, tags_property: {tags_property}")
                     
-                jira_url = f"https://gogotech.atlassian.net/browse/{jira_id}"
+                jira_url = f"{self.issue_base_url}/{jira_id}"
 
                 formatted_work_records.append({
                     "jiraId": jira_id,
@@ -238,8 +258,7 @@ class NotionManager:
             properties[PROPERTY_NAMES["SPRINT"]] = {"select": {"name": sprint[0]}}
         elif isinstance(sprint, dict) and sprint.get("select"):  # Notion sprint structure
             properties[PROPERTY_NAMES["SPRINT"]] = sprint
-        else:
-            properties[PROPERTY_NAMES["SPRINT"]] = {"select": None}
+        # No sprint — omit the property entirely to avoid Notion validation errors
             
         if tag:
             properties[PROPERTY_NAMES["TAGS"]] = {"select": {"name": tag}}
@@ -289,7 +308,7 @@ class NotionManager:
         # Process existing pages
         for key, page in current_pages.items():
             ticket = current_tickets[key]
-            url = f"{JIRA_BASE_URL}/browse/{key}"
+            url = f"{self.issue_base_url}/{key}"
             
             logger.info(f"Updating ticket: {key}")
             
@@ -320,7 +339,7 @@ class NotionManager:
         for key, ticket in current_tickets.items():
             if key not in current_pages:
                 logger.info(f"Creating new ticket: {key}")
-                url = f"{JIRA_BASE_URL}/browse/{key}"
+                url = f"{self.issue_base_url}/{key}"
                 properties = self.__create_properties(
                     key,
                     ticket["summary"],
@@ -344,12 +363,12 @@ class NotionManager:
         current_tickets = {ticket["key"]: ticket for ticket in jira_data}
         
         for key, page in history_pages.items():
-            url = f"{JIRA_BASE_URL}/browse/{key}"
-            
-            # Get ticket from Jira API
-            ticket = self.__get_jira_ticket(key)
+            url = f"{self.issue_base_url}/{key}"
+
+            # Get ticket from configured fetcher (Jira or Linear)
+            ticket = self.history_ticket_fetcher(key)
             if ticket is None:
-                logger.info(f"Skipping update for {key}: Failed to get JIRA status")
+                logger.info(f"Skipping update for {key}: Failed to get issue status")
                 continue
             
             logger.info(f"Updating history ticket: {key}")
