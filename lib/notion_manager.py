@@ -1,6 +1,7 @@
 import requests
 import base64
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -8,6 +9,10 @@ logger = logging.getLogger(__name__)
 NOTION_API_VERSION = "2021-05-13"
 NOTION_BASE_URL = "https://api.notion.com/v1"
 JIRA_BASE_URL = "https://gogotech.atlassian.net"
+
+# Retry config for transient Notion errors (5xx / 429)
+NOTION_MAX_RETRIES = 3
+NOTION_RETRY_BACKOFF = [1, 2, 4]
 
 # Property names
 PROPERTY_NAMES = {
@@ -216,6 +221,40 @@ class NotionManager:
             error_msg += f"\nError details: {error.response.text}"
         logger.error(error_msg)
 
+    def __notion_request_with_retry(self, method, url, **kwargs):
+        """Issue a Notion HTTP request, retrying on transient 5xx / 429 errors."""
+        for attempt in range(NOTION_MAX_RETRIES + 1):
+            try:
+                response = requests.request(method, url, **kwargs)
+                response.raise_for_status()
+                return response
+            except requests.exceptions.HTTPError as e:
+                status = e.response.status_code if e.response is not None else None
+                retryable = status is not None and (status >= 500 or status == 429)
+                if not retryable or attempt >= NOTION_MAX_RETRIES:
+                    raise
+                delay = NOTION_RETRY_BACKOFF[min(attempt, len(NOTION_RETRY_BACKOFF) - 1)]
+                retry_after = e.response.headers.get("Retry-After") if e.response is not None else None
+                if retry_after:
+                    try:
+                        delay = max(delay, float(retry_after))
+                    except ValueError:
+                        pass
+                logger.warning(
+                    f"Notion {method} {url} returned {status}, retrying in {delay}s "
+                    f"(attempt {attempt + 1}/{NOTION_MAX_RETRIES})"
+                )
+                time.sleep(delay)
+            except requests.exceptions.RequestException as e:
+                if attempt >= NOTION_MAX_RETRIES:
+                    raise
+                delay = NOTION_RETRY_BACKOFF[min(attempt, len(NOTION_RETRY_BACKOFF) - 1)]
+                logger.warning(
+                    f"Notion {method} {url} network error: {e}, retrying in {delay}s "
+                    f"(attempt {attempt + 1}/{NOTION_MAX_RETRIES})"
+                )
+                time.sleep(delay)
+
     def __create_notion_page(self, key, properties):
         """Create a new page in Notion database"""
         notion_url = f"{NOTION_BASE_URL}/pages"
@@ -223,10 +262,11 @@ class NotionManager:
             "parent": {"database_id": self.database_id},
             "properties": properties
         }
-        
+
         try:
-            response = requests.post(notion_url, headers=self.notion_headers, json=request_data)
-            response.raise_for_status()
+            self.__notion_request_with_retry(
+                "POST", notion_url, headers=self.notion_headers, json=request_data
+            )
         except requests.exceptions.RequestException as e:
             self.__handle_api_error("create", key, e)
             raise
@@ -235,10 +275,11 @@ class NotionManager:
         """Update a Notion page with given properties"""
         update_url = f"{NOTION_BASE_URL}/pages/{page_id}"
         update_data = {"properties": properties}
-        
+
         try:
-            response = requests.patch(update_url, headers=self.notion_headers, json=update_data)
-            response.raise_for_status()
+            self.__notion_request_with_retry(
+                "PATCH", update_url, headers=self.notion_headers, json=update_data
+            )
         except requests.exceptions.RequestException as e:
             self.__handle_api_error("update", key, e)
             raise
@@ -301,43 +342,47 @@ class NotionManager:
             return None
 
     def __sync_current_tickets(self, current_pages, jira_data):
-        """Sync Notion pages with current sprint data from Jira"""
-        # Create a dictionary of current sprint tickets for quick lookup
+        """Sync Notion pages with current sprint data from Jira.
+
+        Returns (updated, created, failed) counts. Per-ticket failures are
+        logged and the loop continues so one bad page can't abort the batch.
+        """
         current_tickets = {ticket["key"]: ticket for ticket in jira_data}
-        
-        # Process existing pages
+        updated = created = failed = 0
+
         for key, page in current_pages.items():
-            ticket = current_tickets[key]
-            url = f"{self.issue_base_url}/{key}"
-            
-            logger.info(f"Updating ticket: {key}")
-            
-            # Get existing tags from page
-            existing_tags = page["properties"].get(PROPERTY_NAMES["TAGS"], {}).get("multi_select", [])
-            
-            # Create base properties
-            properties = self.__create_properties(
-                key,
-                ticket["summary"],
-                ticket["status"],
-                ticket["story_points"],
-                ticket["active_sprints"],  # Pass Jira sprint list
-                page["properties"][PROPERTY_NAMES["OWNER"]]["select"]["name"],  # Keep existing owner
-                url,
-                ticket["tag"]  # Add tag parameter
-            )
-            
-            # Preserve existing tags
-            if existing_tags:
-                properties[PROPERTY_NAMES["TAGS"]] = {"multi_select": existing_tags}
-            
-            # Update page
-            self.__update_notion_page(page["id"], key, properties)
-        
-        # Create new pages for tickets that don't exist in Notion
-        new_tickets_count = 0
+            try:
+                ticket = current_tickets[key]
+                url = f"{self.issue_base_url}/{key}"
+
+                logger.info(f"Updating ticket: {key}")
+
+                existing_tags = page["properties"].get(PROPERTY_NAMES["TAGS"], {}).get("multi_select", [])
+
+                properties = self.__create_properties(
+                    key,
+                    ticket["summary"],
+                    ticket["status"],
+                    ticket["story_points"],
+                    ticket["active_sprints"],
+                    page["properties"][PROPERTY_NAMES["OWNER"]]["select"]["name"],
+                    url,
+                    ticket["tag"]
+                )
+
+                if existing_tags:
+                    properties[PROPERTY_NAMES["TAGS"]] = {"multi_select": existing_tags}
+
+                self.__update_notion_page(page["id"], key, properties)
+                updated += 1
+            except Exception as e:
+                failed += 1
+                logger.exception(f"Skipping current ticket {key} after error: {e}")
+
         for key, ticket in current_tickets.items():
-            if key not in current_pages:
+            if key in current_pages:
+                continue
+            try:
                 logger.info(f"Creating new ticket: {key}")
                 url = f"{self.issue_base_url}/{key}"
                 properties = self.__create_properties(
@@ -345,54 +390,64 @@ class NotionManager:
                     ticket["summary"],
                     ticket["status"],
                     ticket["story_points"],
-                    ticket["active_sprints"],  # Pass Jira sprint list
+                    ticket["active_sprints"],
                     ticket["owner"],
                     url,
                     ticket["tag"]
                 )
-                
+
                 self.__create_notion_page(key, properties)
-                new_tickets_count += 1
-        
-        if new_tickets_count > 0:
-            logger.info(f"Created {new_tickets_count} new tickets")
+                created += 1
+            except Exception as e:
+                failed += 1
+                logger.exception(f"Skipping new ticket {key} after error: {e}")
+
+        if created > 0:
+            logger.info(f"Created {created} new tickets")
+        return updated, created, failed
 
     def __sync_history_tickets(self, history_pages, jira_data):
-        """Sync Notion pages that are not in current sprint with Jira data"""
-        # Create a dictionary of current sprint tickets for quick lookup
-        current_tickets = {ticket["key"]: ticket for ticket in jira_data}
-        
-        for key, page in history_pages.items():
-            url = f"{self.issue_base_url}/{key}"
+        """Sync Notion pages that are not in current sprint with Jira data.
 
-            # Get ticket from configured fetcher (Jira or Linear)
-            ticket = self.history_ticket_fetcher(key)
-            if ticket is None:
-                logger.info(f"Skipping update for {key}: Failed to get issue status")
-                continue
-            
-            logger.info(f"Updating history ticket: {key}")
-            
-            # Get existing tags from page
-            existing_tags = page["properties"].get(PROPERTY_NAMES["TAGS"], {}).get("multi_select", [])
-            
-            # Create base properties
-            properties = self.__create_properties(
-                key,
-                ticket["summary"],
-                ticket["status"],
-                ticket["story_points"],
-                page["properties"][PROPERTY_NAMES["SPRINT"]],  # Keep existing sprint
-                page["properties"][PROPERTY_NAMES["OWNER"]]["select"]["name"],  # Keep existing owner
-                url
-            )
-            
-            # Preserve existing tags
-            if existing_tags:
-                properties[PROPERTY_NAMES["TAGS"]] = {"multi_select": existing_tags}
-            
-            # Update page
-            self.__update_notion_page(page["id"], key, properties)
+        Returns (updated, skipped, failed) counts. Per-ticket failures are
+        logged and the loop continues.
+        """
+        updated = skipped = failed = 0
+
+        for key, page in history_pages.items():
+            try:
+                url = f"{self.issue_base_url}/{key}"
+
+                ticket = self.history_ticket_fetcher(key)
+                if ticket is None:
+                    logger.info(f"Skipping update for {key}: Failed to get issue status")
+                    skipped += 1
+                    continue
+
+                logger.info(f"Updating history ticket: {key}")
+
+                existing_tags = page["properties"].get(PROPERTY_NAMES["TAGS"], {}).get("multi_select", [])
+
+                properties = self.__create_properties(
+                    key,
+                    ticket["summary"],
+                    ticket["status"],
+                    ticket["story_points"],
+                    page["properties"][PROPERTY_NAMES["SPRINT"]],
+                    page["properties"][PROPERTY_NAMES["OWNER"]]["select"]["name"],
+                    url
+                )
+
+                if existing_tags:
+                    properties[PROPERTY_NAMES["TAGS"]] = {"multi_select": existing_tags}
+
+                self.__update_notion_page(page["id"], key, properties)
+                updated += 1
+            except Exception as e:
+                failed += 1
+                logger.exception(f"Skipping history ticket {key} after error: {e}")
+
+        return updated, skipped, failed
 
     def update(self, jira_data):
         """Main function to sync Jira and Notion data"""
@@ -448,15 +503,23 @@ class NotionManager:
                     history_pages[key] = page
             
             logger.info(f"Current sprint: {len(current_pages)} pages, History: {len(history_pages)} pages")
-            
-            # Sync with current sprint data
-            self.__sync_current_tickets(current_pages, jira_data)
-            
-            # Sync remaining pages with Jira API
-            self.__sync_history_tickets(history_pages, jira_data)
-            
+
+            cur_updated, cur_created, cur_failed = self.__sync_current_tickets(current_pages, jira_data)
+            hist_updated, hist_skipped, hist_failed = self.__sync_history_tickets(history_pages, jira_data)
+
+            total_failed = cur_failed + hist_failed
+            logger.info(
+                f"Sync summary — current: {cur_updated} updated, {cur_created} created, {cur_failed} failed; "
+                f"history: {hist_updated} updated, {hist_skipped} skipped, {hist_failed} failed"
+            )
+            if total_failed > 0:
+                logger.warning(f"Sync process completed with {total_failed} failed ticket(s)")
+            else:
+                logger.info("Sync process completed successfully")
+            return
+
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to sync with Notion: {e}")
-        
+
         logger.info("Sync process completed")
 
