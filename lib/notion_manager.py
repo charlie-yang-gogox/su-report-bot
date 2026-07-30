@@ -1,7 +1,9 @@
 import requests
 import base64
 import logging
+import os
 import time
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -9,6 +11,19 @@ logger = logging.getLogger(__name__)
 NOTION_API_VERSION = "2021-05-13"
 NOTION_BASE_URL = "https://api.notion.com/v1"
 JIRA_BASE_URL = "https://gogotech.atlassian.net"
+
+# History pages created more than this many days ago are left untouched. Every
+# run used to re-fetch and re-write EVERY archived page — measured at 733 + 820
+# pages across the two databases, ~19 of a 20 minute run, for records the reports
+# never read (both daily and weekly filter on the active sprint).
+#
+# The cutoff reads created_time, NOT last_edited_time: this sync rewrites every
+# history page on every run, so last_edited_time is always "today" and a gate on
+# it would skip nothing (measured: 3 of 755 and 0 of 867 pages). created_time is
+# written once by Notion at page creation and nothing here touches it.
+#
+# 0 disables the cutoff.
+HISTORY_SYNC_DAYS = int(os.getenv("HISTORY_SYNC_DAYS", "90"))
 
 # Retry config for transient Notion errors (5xx / 429)
 NOTION_MAX_RETRIES = 3
@@ -406,16 +421,49 @@ class NotionManager:
             logger.info(f"Created {created} new tickets")
         return updated, created, failed
 
+    @staticmethod
+    def __created_before(page, cutoff):
+        """True when the page was created before cutoff.
+
+        A page whose created_time is missing or unparsable counts as in-window:
+        if Notion ever changes the field, the sync does more work instead of
+        silently skipping records.
+        """
+        raw = page.get("created_time")
+        if not raw:
+            return False
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")) < cutoff
+        except ValueError:
+            logger.warning(f"Unparsable created_time {raw!r}; treating page as in-window")
+            return False
+
     def __sync_history_tickets(self, history_pages, jira_data):
         """Sync Notion pages that are not in current sprint with Jira data.
 
-        Returns (updated, skipped, failed) counts. Per-ticket failures are
-        logged and the loop continues.
+        Returns (updated, skipped, failed, out_of_window) counts. Per-ticket
+        failures are logged and the loop continues. Pages created more than
+        HISTORY_SYNC_DAYS ago are left untouched, which is where nearly all of
+        this method's runtime used to go.
         """
-        updated = skipped = failed = 0
+        updated = skipped = failed = out_of_window = 0
+
+        cutoff = None
+        if HISTORY_SYNC_DAYS > 0:
+            cutoff = datetime.now(timezone.utc) - timedelta(days=HISTORY_SYNC_DAYS)
+            logger.info(
+                f"History sync window: {HISTORY_SYNC_DAYS} days "
+                f"(skipping pages created before {cutoff.date()})"
+            )
+        else:
+            logger.info("History sync window: disabled (HISTORY_SYNC_DAYS=0) — syncing every page")
 
         for key, page in history_pages.items():
             try:
+                if cutoff and self.__created_before(page, cutoff):
+                    out_of_window += 1
+                    continue
+
                 url = f"{self.issue_base_url}/{key}"
 
                 ticket = self.history_ticket_fetcher(key)
@@ -447,7 +495,7 @@ class NotionManager:
                 failed += 1
                 logger.exception(f"Skipping history ticket {key} after error: {e}")
 
-        return updated, skipped, failed
+        return updated, skipped, failed, out_of_window
 
     def update(self, jira_data):
         """Main function to sync Jira and Notion data"""
@@ -505,12 +553,15 @@ class NotionManager:
             logger.info(f"Current sprint: {len(current_pages)} pages, History: {len(history_pages)} pages")
 
             cur_updated, cur_created, cur_failed = self.__sync_current_tickets(current_pages, jira_data)
-            hist_updated, hist_skipped, hist_failed = self.__sync_history_tickets(history_pages, jira_data)
+            hist_updated, hist_skipped, hist_failed, hist_out_of_window = self.__sync_history_tickets(
+                history_pages, jira_data
+            )
 
             total_failed = cur_failed + hist_failed
             logger.info(
                 f"Sync summary — current: {cur_updated} updated, {cur_created} created, {cur_failed} failed; "
-                f"history: {hist_updated} updated, {hist_skipped} skipped, {hist_failed} failed"
+                f"history: {hist_updated} updated, {hist_skipped} skipped, {hist_failed} failed, "
+                f"{hist_out_of_window} outside the {HISTORY_SYNC_DAYS}-day window"
             )
             if total_failed > 0:
                 logger.warning(f"Sync process completed with {total_failed} failed ticket(s)")

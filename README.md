@@ -181,6 +181,13 @@ A manual dispatch always runs, regardless of the gate.
   `JIRA_USERS` / `LINEAR_USERS`, and the runner exits non-zero so the Actions run
   is marked failed.
 - **Rotating a credential**: `gh secret set <NAME>` — the workflow needs no edit.
+- **History sync window** (`HISTORY_SYNC_DAYS`, default 90): archived Notion pages
+  created longer ago than this are not re-synced. Without it every run re-fetched
+  and re-wrote every archived page — measured at 733 + 820 pages and roughly 19 of
+  a 20 minute run, for records no report reads. Set `HISTORY_SYNC_DAYS=0` to sync
+  everything. The cutoff deliberately reads Notion's `created_time`, not
+  `last_edited_time`: the sync itself rewrites those pages, so `last_edited_time`
+  is always "today" and gating on it skips nothing.
 - **Editing the user list**: `JIRA_USERS` / `LINEAR_USERS` are single-line JSON.
   If the JSON fails to parse, the scripts fall back to an empty list and silently
   send nothing, so re-check formatting after any edit.

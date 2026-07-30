@@ -33,7 +33,10 @@ jobs:
     # A manual workflow_dispatch always runs — that is someone choosing to.
     if: github.event_name == 'workflow_dispatch' || vars.REPORT_SCHEDULE_ENABLED == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # A single-user daily run measured 19m45s against a 20m limit. Codemagic
+    # allowed 60 for the same script; keep that headroom so a slow Notion day
+    # fails on its own error rather than on the clock.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
