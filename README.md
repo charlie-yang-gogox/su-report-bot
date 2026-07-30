@@ -133,16 +133,76 @@ Reports are sent in the following format:
 • TICKET-789: Title `Status`
 ```
 
+## Scheduled runs (GitHub Actions)
+
+`.github/workflows/report.yml` runs `scripts/run_reports.sh` on a schedule. In CI
+there is no `.env` — every value comes from repo Actions secrets.
+
+| Cadence | cron (UTC) | Asia/Taipei | Scripts |
+|---|---|---|---|
+| daily | `3 1 * * 1-5` | weekdays 09:03 | `main.py` + `main_linear.py` |
+| weekly | `7 10 * * 5` | Friday 18:07 | `gen_weekly_report.py` + `gen_weekly_report_linear.py` |
+
+Both trackers always run and their exit codes are captured independently, so a
+Jira outage cannot swallow the Linear team's report.
+
+### Enabling the schedule
+
+Scheduled runs are gated on a repo variable and are **off by default**:
+
+```bash
+gh variable set REPORT_SCHEDULE_ENABLED --body true
+```
+
+The gate exists because this repository is public while the report scripts log
+ticket ids and titles to stdout — enabling the schedule on a public repo
+publishes the team's sprint contents in the run log, which anyone can read. Make
+the repository private first, or accept that trade-off deliberately.
+
+### Manual run / re-send
+
+Actions → Report → Run workflow, choosing `daily` or `weekly`. Or:
+
+```bash
+gh workflow run report.yml -f mode=daily
+```
+
+A manual dispatch always runs, regardless of the gate.
+
+### Operational notes
+
+- **60-day dormancy**: GitHub disables scheduled workflows after 60 days without
+  repository activity and emails the owner. This repo's commits are sparse, so
+  treat a periodic re-enable as expected maintenance rather than assuming the
+  schedule runs forever.
+- **Punctuality**: GitHub does not guarantee scheduled workflows fire on time and
+  delays cluster on the hour, which is why both crons use off-minutes.
+- **Failure reporting**: each script DMs its own error to the first user in
+  `JIRA_USERS` / `LINEAR_USERS`, and the runner exits non-zero so the Actions run
+  is marked failed.
+- **Rotating a credential**: `gh secret set <NAME>` — the workflow needs no edit.
+- **Editing the user list**: `JIRA_USERS` / `LINEAR_USERS` are single-line JSON.
+  If the JSON fails to parse, the scripts fall back to an empty list and silently
+  send nothing, so re-check formatting after any edit.
+
 ## Project Structure
 
 ```
 su-report-bot/
+├── .github/workflows/
+│   └── report.yml           # Scheduled + manual report runs
 ├── lib/
 │   ├── notion_manager.py    # Notion API integration
 │   ├── jira_manager.py      # Jira API integration
+│   ├── linear_manager.py    # Linear API integration
 │   ├── slack_manager.py     # Slack Bot API integration
 │   └── logger.py            # Logging configuration
-├── main.py                  # Main entry point
+├── scripts/
+│   └── run_reports.sh       # Single entry point for every run
+├── main.py                  # Daily report — Jira
+├── main_linear.py           # Daily report — Linear
+├── gen_weekly_report.py     # Weekly report — Jira
+├── gen_weekly_report_linear.py  # Weekly report — Linear
 ├── requirements.txt         # Python dependencies
 ├── .env.example            # Example environment variables
 └── README.md               # This file

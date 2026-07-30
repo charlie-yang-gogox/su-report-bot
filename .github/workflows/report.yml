@@ -1,0 +1,69 @@
+name: Report
+
+# Codemagic ran three near-identical workflows triggered on `push` and
+# `pull_request` for every branch, so every push DM'd the whole team. Here the
+# only triggers are the clock and a deliberate human dispatch.
+on:
+  schedule:
+    # cron is UTC-only. Taipei is UTC+8 all year (no DST), so these never drift.
+    # GitHub does not guarantee punctuality for scheduled workflows and delays
+    # cluster on the hour, hence the off-minutes.
+    - cron: "3 1 * * 1-5" # 09:03 Asia/Taipei, weekdays -> daily
+    - cron: "7 10 * * 5" # 18:07 Asia/Taipei, Friday   -> weekly
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Which report to send
+        type: choice
+        options: [daily, weekly]
+        default: daily
+
+concurrency:
+  group: report-${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  report:
+    # Scheduled runs are OFF until the repo variable REPORT_SCHEDULE_ENABLED is
+    # "true". This repository is public and the report scripts log ticket ids and
+    # titles to stdout, which would publish the team's sprint contents in the run
+    # log. Turn the schedule on only after that is resolved (making the repo
+    # private is the intended fix):
+    #   gh variable set REPORT_SCHEDULE_ENABLED --body true
+    # A manual workflow_dispatch always runs — that is someone choosing to.
+    if: github.event_name == 'workflow_dispatch' || vars.REPORT_SCHEDULE_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10" # matches runtime.txt (python-3.10.6)
+          cache: pip
+
+      # One workflow serves both cadences: the firing cron picks the mode, and a
+      # manual run takes it from the dispatch input.
+      - name: Resolve mode
+        run: |
+          case "${{ github.event.schedule }}" in
+            "3 1 * * 1-5") mode=daily ;;
+            "7 10 * * 5")  mode=weekly ;;
+            *)             mode="${{ inputs.mode }}" ;;
+          esac
+          echo "Resolved mode: $mode"
+          echo "MODE=$mode" >> "$GITHUB_ENV"
+
+      - name: Send reports
+        env:
+          SLACK_TOKEN: ${{ secrets.SLACK_TOKEN }}
+          JIRA_USER_NAME: ${{ secrets.JIRA_USER_NAME }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_USERS: ${{ secrets.JIRA_USERS }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          LINEAR_API_TOKEN: ${{ secrets.LINEAR_API_TOKEN }}
+          LINEAR_ORG_SLUG: ${{ secrets.LINEAR_ORG_SLUG }}
+          LINEAR_USERS: ${{ secrets.LINEAR_USERS }}
+          LINEAR_NOTION_DATABASE_ID: ${{ secrets.LINEAR_NOTION_DATABASE_ID }}
+        run: bash scripts/run_reports.sh "$MODE"
