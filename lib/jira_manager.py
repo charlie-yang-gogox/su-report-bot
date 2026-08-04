@@ -35,6 +35,12 @@ class JiraManager:
         
     def get_tickets(self):
         """Get tickets from Jira API using custom JQL query"""
+        # TODO(jira-auth): this method cannot detect an authentication failure.
+        # Jira answers unauthorized searches with 200 and an empty issue list, so a
+        # dead token surfaces here as "no tickets" and the whole run reports success
+        # — it hid a week-long outage starting 2026-07-23. Add a /rest/api/3/myself
+        # preflight (it does 401) before trusting an empty result. See "Known
+        # issues" in README.md.
         jira_api_url = "https://gogotech.atlassian.net/rest/api/3/search/jql"
         
         # Construct JQL query using user_ids

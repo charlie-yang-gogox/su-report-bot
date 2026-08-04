@@ -192,6 +192,67 @@ A manual dispatch always runs, regardless of the gate.
   If the JSON fails to parse, the scripts fall back to an empty list and silently
   send nothing, so re-check formatting after any edit.
 
+## Known issues
+
+### Jira integration is unauthenticated — open, parked 2026-08-04
+
+The Jira half of the bot has produced nothing since **2026-07-23 22:25 UTC**. The
+Linear half is unaffected: separate credentials, running normally.
+
+**Cause.** Jira rejects the configured `JIRA_USER_NAME` + `JIRA_API_TOKEN` pair.
+`GET /rest/api/3/myself` returns 401 with header `X-Seraph-Loginreason:
+AUTHENTICATED_FAILED` — identical to what a deliberately wrong password returns,
+while a request sent with no credentials at all omits that header entirely. The
+email is correct and the token is a well-formed 192-character `ATATT3…` value, so
+the token itself is expired or revoked. The `JIRA_*` secrets currently in GitHub
+Actions were loaded from a local `.env` and carry that same dead token.
+
+**Why a week of runs looked fine.** Jira answers unauthorized *searches* with 200
+and an empty result set rather than 401:
+
+| request | response |
+|---|---|
+| `POST /rest/api/3/search/jql` (what the bot sends) | 200, 0 issues |
+| `project = CET` with no other clause | 200, 0 issues |
+| `GET /rest/api/3/issue/{key}` | 404 |
+| `GET /rest/api/3/myself` | 401 |
+
+So `get_tickets()` raises nothing, no active sprint is found, `send_report()`
+returns early, and the script exits 0. Every run since 2026-07-24 has reported
+success while sending nothing. The history lookups that return `None` on every run
+have the same single cause.
+
+**To unblock**
+
+1. Mint a new API token at
+   <https://id.atlassian.com/manage-profile/security/api-tokens>. The old one
+   should show as expired or absent there, which independently confirms the cause.
+2. `gh secret set JIRA_API_TOKEN` — plus `JIRA_USER_NAME` if the account changes.
+3. Trigger a manual `daily` run and look for a non-zero `Retrieved N JIRA tickets`.
+4. Do not bother mining Codemagic's `mobile` environment group for a replacement:
+   pushes on 2026-07-29 and 2026-07-30 would have fired its push-triggered builds
+   and no Jira write followed, so its token is very likely the same dead one.
+
+**Fix to make once unblocked.** Have `JiraManager` call `/rest/api/3/myself` once
+at construction and fail loudly on anything but 200. That endpoint 401s under
+exactly this failure while the search endpoint does not, which converts a silent
+week into a same-day Slack error. Gating on "zero issues across every configured
+user" is weaker — a sprint boundary legitimately produces zero.
+
+### Four of five Jira users cannot be messaged — open
+
+`slack_user_id` is an empty string for `eric.chien`, `fiona.shih`,
+`Broccoli Huang` and `Alex Wang` in `JIRA_USERS`, and `send_report` skips any user
+missing it. Even with a working token, only `charlie.yang` would receive a Jira
+report. `eric.chien`'s id is recoverable from his `LINEAR_USERS` entry; the other
+three need a Slack lookup. This is a secret/config edit, not a code change.
+
+### harvey.liu is synced but never reported to — open
+
+He owns 123 pages in the Jira Notion database yet is absent from `JIRA_USERS`.
+Adding him needs his Atlassian account id, which cannot be resolved while the
+credential above is dead: user search returns empty and his tickets 404.
+
 ## Project Structure
 
 ```
