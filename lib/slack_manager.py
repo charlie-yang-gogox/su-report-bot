@@ -100,7 +100,7 @@ class SlackManager:
             if record.get("sprint") == sprint_name and record.get("owner") == owner
         ]
         
-        self.logger.info(f"Filtered {len(filtered_records)} records for sprint '{sprint_name}' and owner '{owner}'")
+        self.logger.debug(f"Filtered {len(filtered_records)} records for sprint '{sprint_name}' and owner '{owner}'")
         return filtered_records
     
     def _group_records_by_status(self, records: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
@@ -140,14 +140,19 @@ class SlackManager:
         return report_data
     
     def _log_sprint_report(self, report_data: Dict[str, Any], owner: str):
-        """Log sprint report information"""
+        """Log sprint report information.
+
+        Every line here names a person or a ticket, so the whole function logs at
+        DEBUG. The INFO-level trace of a run is the per-user count emitted by the
+        caller — see send_report.
+        """
         sprint_name = report_data["sprint_name"]
         total_records = report_data["total_records"]
-        
-        self.logger.info(f"\n{'='*80}")
-        self.logger.info(f"📊 SPRINT REPORT {sprint_name} - Owner: {owner}")
-        self.logger.info(f"📈 Total records: {total_records}")
-        self.logger.info(f"{'='*80}")
+
+        self.logger.debug(f"\n{'='*80}")
+        self.logger.debug(f"📊 SPRINT REPORT {sprint_name} - Owner: {owner}")
+        self.logger.debug(f"📈 Total records: {total_records}")
+        self.logger.debug(f"{'='*80}")
         
         # Get all records and sort by status
         all_records = []
@@ -163,7 +168,7 @@ class SlackManager:
         
         # Log each record
         for record in all_records:
-            self.logger.info(f"  • {record['ticket_id']}: {record['title']} `{record['status']}`")
+            self.logger.debug(f"  • {record['ticket_id']}: {record['title']} `{record['status']}`")
     
     def send_sprint_report(self, report_data: Dict[str, Any], user_id: str, slack_token: str) -> bool:
         """Send sprint report to Slack via direct message"""
@@ -189,8 +194,12 @@ class SlackManager:
             self.logger.info("No active sprints found in Jira data")
             return []
         
-        self.logger.info(f"Active sprints found: {sorted(active_sprints)}")
-        
+        self.logger.info(f"Active sprints found: {len(active_sprints)}")
+        self.logger.debug(f"Active sprint names: {sorted(active_sprints)}")
+
+        reports_sent = 0
+        users_with_reports = set()
+
         # Process each user
         for user_config in jira_users:
             issue_user_id = user_config.get("issue_user_id")
@@ -199,11 +208,11 @@ class SlackManager:
 
             # Skip if no issue tracker user ID or slack_user_id is empty
             if not issue_user_id or not slack_user_id:
-                self.logger.info(f"Skipping user {owner} - missing issue_user_id or slack_user_id")
+                self.logger.debug(f"Skipping user {owner} - missing issue_user_id or slack_user_id")
                 continue
-                
+
             try:
-                self.logger.info(f"Processing reports for user: {owner}")
+                self.logger.debug(f"Processing reports for user: {owner}")
                 
                 # Process each active sprint for this user
                 for sprint_name in sorted(active_sprints):
@@ -213,11 +222,11 @@ class SlackManager:
                         
                         # Only proceed if filtered records count > 0
                         if sprint_records and len(sprint_records) > 0:
-                            self.logger.info(f"\n{'='*60}")
-                            self.logger.info(f"Processing Sprint: {sprint_name} for user: {owner}")
-                            self.logger.info(f"{'='*60}")
-                            self.logger.info(f"Found {len(sprint_records)} records in Notion for sprint '{sprint_name}', proceeding with report...")
-                            
+                            self.logger.debug(f"\n{'='*60}")
+                            self.logger.debug(f"Processing Sprint: {sprint_name} for user: {owner}")
+                            self.logger.debug(f"{'='*60}")
+                            self.logger.debug(f"Found {len(sprint_records)} records in Notion for sprint '{sprint_name}', proceeding with report...")
+
                             # Create report data
                             report_data = self._create_report_data(sprint_name, sprint_records)
                             
@@ -228,7 +237,9 @@ class SlackManager:
                             self.send_sprint_report(report_data, user_id=slack_user_id, slack_token=slack_token)
                             
                             all_report_data.append(report_data)
-                            
+                            reports_sent += 1
+                            users_with_reports.add(owner)
+
                         # No logging for sprints with no records
                             
                     except Exception as e:
@@ -238,5 +249,8 @@ class SlackManager:
                 self.logger.error(f"Failed to process reports for user {owner}: {e}")
                 continue
         
-        self.logger.info("Sprint report processing completed for all users")
+        self.logger.info(
+            f"Sprint report processing completed — {reports_sent} report(s) "
+            f"sent to {len(users_with_reports)} user(s)"
+        )
         return all_report_data

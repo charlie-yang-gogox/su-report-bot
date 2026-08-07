@@ -84,7 +84,25 @@ GITHUB_REPO=your-github-repo
 
 # Slack Configuration
 SLACK_TOKEN=xoxb-your-slack-bot-token
+
+# Logging (optional) - stdout verbosity, default INFO. See "Logging" below.
+LOG_LEVEL=INFO
 ```
+
+### Logging
+
+Report content — ticket titles, owner names, and API response bodies — is logged at
+`DEBUG`. `INFO` carries only counts and stage markers, so a normal run reads
+`Sent report to 4 users, 46 tickets` rather than listing the sprint.
+
+This split exists because stdout becomes the GitHub Actions run log, which is visible to
+everyone with repository access. `LOG_LEVEL` controls the stdout stream only; the log file
+under `logs/` always records `DEBUG`, so local debugging keeps full detail without widening
+what CI prints.
+
+To get that detail in CI, dispatch the workflow manually with its `debug` input enabled.
+That run's log will contain the full sprint, so delete it afterwards. Scheduled runs cannot
+set the input.
 
 ### Configuration Details
 

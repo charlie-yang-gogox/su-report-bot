@@ -79,7 +79,7 @@ class NotionManager:
 
     def get_notion_work_record(self, sprint_name, owner=None):
         """Get work records from Notion database for a specific sprint and optionally filter by owner"""
-        logger.info(f"Getting work records for sprint: {sprint_name}" + (f" and owner: {owner}" if owner else ""))
+        logger.debug(f"Getting work records for sprint: {sprint_name}" + (f" and owner: {owner}" if owner else ""))
         notion_query_url = f"https://api.notion.com/v1/databases/{self.database_id}/query"
         
         # Build filter based on parameters
@@ -230,11 +230,21 @@ class NotionManager:
         return formatted_work_records
 
     def __handle_api_error(self, operation, key, error):
-        """Handle API errors consistently"""
-        error_msg = f"Failed to {operation} {key}"
-        if hasattr(error, 'response') and hasattr(error.response, 'text'):
-            error_msg += f"\nError details: {error.response.text}"
-        logger.error(error_msg)
+        """Handle API errors consistently.
+
+        The response body is the leakiest object in this codebase: a Notion
+        property-validation error echoes back the page properties, ticket title
+        included. ERROR gets the shape (status code, error type); the body itself
+        goes to DEBUG, which reaches the log file but not stdout.
+        """
+        error_msg = f"Failed to {operation} {key} ({type(error).__name__}"
+        response = getattr(error, 'response', None)
+        if response is not None and getattr(response, 'status_code', None) is not None:
+            error_msg += f", HTTP {response.status_code}"
+        logger.error(error_msg + ")")
+
+        if response is not None and hasattr(response, 'text'):
+            logger.debug(f"Failed to {operation} {key} — response body: {response.text}")
 
     def __notion_request_with_retry(self, method, url, **kwargs):
         """Issue a Notion HTTP request, retrying on transient 5xx / 429 errors."""
@@ -370,7 +380,7 @@ class NotionManager:
                 ticket = current_tickets[key]
                 url = f"{self.issue_base_url}/{key}"
 
-                logger.info(f"Updating ticket: {key}")
+                logger.debug(f"Updating ticket: {key}")
 
                 existing_tags = page["properties"].get(PROPERTY_NAMES["TAGS"], {}).get("multi_select", [])
 
@@ -398,7 +408,7 @@ class NotionManager:
             if key in current_pages:
                 continue
             try:
-                logger.info(f"Creating new ticket: {key}")
+                logger.debug(f"Creating new ticket: {key}")
                 url = f"{self.issue_base_url}/{key}"
                 properties = self.__create_properties(
                     key,
@@ -468,11 +478,11 @@ class NotionManager:
 
                 ticket = self.history_ticket_fetcher(key)
                 if ticket is None:
-                    logger.info(f"Skipping update for {key}: Failed to get issue status")
+                    logger.debug(f"Skipping update for {key}: Failed to get issue status")
                     skipped += 1
                     continue
 
-                logger.info(f"Updating history ticket: {key}")
+                logger.debug(f"Updating history ticket: {key}")
 
                 existing_tags = page["properties"].get(PROPERTY_NAMES["TAGS"], {}).get("multi_select", [])
 
@@ -570,7 +580,14 @@ class NotionManager:
             return
 
         except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to sync with Notion: {e}")
+            # str(e) on a RequestException carries the full request URL; the type
+            # and status are enough to diagnose, and the rest goes to DEBUG.
+            status = getattr(getattr(e, 'response', None), 'status_code', None)
+            logger.error(
+                f"Failed to sync with Notion: {type(e).__name__}"
+                + (f" (HTTP {status})" if status is not None else "")
+            )
+            logger.debug(f"Notion sync failure detail: {e}")
 
         logger.info("Sync process completed")
 

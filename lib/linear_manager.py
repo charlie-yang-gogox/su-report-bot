@@ -104,8 +104,16 @@ class LinearManager:
         data = response.json()
 
         if "errors" in data:
-            logger.error(f"Linear GraphQL errors: {data['errors']}")
-            raise ValueError(f"Linear API error: {data['errors']}")
+            # Keep the messages, drop locations/path/extensions — those echo the
+            # query and its variables back. The raised message matters just as much
+            # as the logged one: it resurfaces via exc_info at the entry point.
+            messages = "; ".join(
+                str(err.get("message", "unknown")) if isinstance(err, dict) else "unknown"
+                for err in data["errors"]
+            )
+            logger.error(f"Linear GraphQL errors: {messages}")
+            logger.debug(f"Linear GraphQL error detail: {data['errors']}")
+            raise ValueError(f"Linear API error: {messages}")
 
         return data
 
@@ -136,7 +144,8 @@ class LinearManager:
                 active_cycles.add(self._cycle_display_name(node["cycle"]))
 
         logger.info("=" * 50)
-        logger.info(f"Active Cycles: {sorted(active_cycles)}")
+        logger.info(f"Active Cycles: {len(active_cycles)}")
+        logger.debug(f"Active cycle names: {sorted(active_cycles)}")
         logger.info(f"Total Issues: {len(all_nodes)}")
         logger.info("=" * 50)
 
@@ -148,7 +157,8 @@ class LinearManager:
 
         for node in data.get("issues", []):
             if not isinstance(node, dict):
-                logger.warning(f"Skipping unexpected node format: {node}")
+                logger.warning(f"Skipping unexpected node format: {type(node).__name__}")
+                logger.debug(f"Malformed Linear node: {node}")
                 continue
 
             key = node.get("identifier", "")
