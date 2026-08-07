@@ -64,6 +64,10 @@ class NotionManager:
         self.jira_token = jira_token
         self.issue_base_url = issue_base_url or f"{JIRA_BASE_URL}/browse"
         self.history_ticket_fetcher = history_ticket_fetcher or self.__get_jira_ticket
+        # HTTP status -> count, for the aggregate emitted at the end of a sync.
+        # Per-ticket fetch failures are DEBUG: a stale backlog produces one line
+        # per archived ticket, which enumerates the whole key space on stdout.
+        self.jira_fetch_failures = {}
         self.notion_headers = {
             "Authorization": notion_token,
             "Content-Type": "application/json",
@@ -349,9 +353,9 @@ class NotionManager:
             active_sprints = [sprint["name"] for sprint in sprints if sprint["state"] == "active"]
             assignee = fields.get("assignee")
             if assignee is None:
-                logger.warning(f"JIRA ticket {key} has no assignee field")
+                logger.debug(f"JIRA ticket {key} has no assignee field")
             if not isinstance(assignee, dict):
-                logger.warning(f"JIRA ticket {key} assignee type is unexpected: {type(assignee).__name__}")
+                logger.debug(f"JIRA ticket {key} assignee type is unexpected: {type(assignee).__name__}")
                 assignee = {}
             
             return {
@@ -363,7 +367,14 @@ class NotionManager:
                 "owner": assignee.get("displayName", "Unassigned")
             }
         except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to get JIRA ticket {key}: {e}")
+            # str(e) embeds the full REST URL, and a stale backlog makes this fire
+            # once per archived ticket — 154 lines on a measured run, which is the
+            # entire key space plus the internal host. The aggregate below carries
+            # the operational signal instead.
+            status = getattr(getattr(e, 'response', None), 'status_code', None)
+            bucket = str(status) if status is not None else type(e).__name__
+            self.jira_fetch_failures[bucket] = self.jira_fetch_failures.get(bucket, 0) + 1
+            logger.debug(f"Failed to get JIRA ticket {key}: {e}")
             return None
 
     def __sync_current_tickets(self, current_pages, jira_data):
@@ -447,6 +458,22 @@ class NotionManager:
         except ValueError:
             logger.warning(f"Unparsable created_time {raw!r}; treating page as in-window")
             return False
+
+    def __log_jira_fetch_failures(self):
+        """Report Jira fetch failures as one aggregate, then reset the tally.
+
+        Keeps the signal an outage needs — "everything is 401" is loud — without
+        naming a ticket per line. Individual keys are at DEBUG.
+        """
+        if not self.jira_fetch_failures:
+            return
+        total = sum(self.jira_fetch_failures.values())
+        breakdown = ", ".join(
+            f"{status}×{count}"
+            for status, count in sorted(self.jira_fetch_failures.items())
+        )
+        logger.error(f"Jira fetch failures: {total} ticket(s) — {breakdown}")
+        self.jira_fetch_failures = {}
 
     def __sync_history_tickets(self, history_pages, jira_data):
         """Sync Notion pages that are not in current sprint with Jira data.
@@ -573,6 +600,7 @@ class NotionManager:
                 f"history: {hist_updated} updated, {hist_skipped} skipped, {hist_failed} failed, "
                 f"{hist_out_of_window} outside the {HISTORY_SYNC_DAYS}-day window"
             )
+            self.__log_jira_fetch_failures()
             if total_failed > 0:
                 logger.warning(f"Sync process completed with {total_failed} failed ticket(s)")
             else:
