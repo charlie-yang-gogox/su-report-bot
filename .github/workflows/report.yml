@@ -17,6 +17,14 @@ on:
         type: choice
         options: [daily, weekly]
         default: daily
+      debug:
+        # Report content — ticket titles, owner names, API response bodies — is
+        # logged at DEBUG and therefore absent from a normal run log. Turn this on
+        # to diagnose a failure, then delete the run: it puts the whole sprint back
+        # into the log. Scheduled runs can never set it.
+        description: Log full detail (ticket titles, API bodies) to the run log
+        type: boolean
+        default: false
 
 concurrency:
   group: report-${{ github.workflow }}
@@ -59,6 +67,8 @@ jobs:
 
       - name: Send reports
         env:
+          # Null on a scheduled run, so the schedule always resolves to INFO.
+          LOG_LEVEL: ${{ inputs.debug && 'DEBUG' || 'INFO' }}
           SLACK_TOKEN: ${{ secrets.SLACK_TOKEN }}
           JIRA_USER_NAME: ${{ secrets.JIRA_USER_NAME }}
           JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
