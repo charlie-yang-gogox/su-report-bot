@@ -51,7 +51,9 @@ class SlackManager:
                 self.logger.error(f"Failed to send message: {message_data.get('error')}")
                 return False
             
-            self.logger.info(f"Direct message sent to user {user_id} successfully")
+            # A Slack user id identifies a person, and the counts in send_report /
+            # the weekly entry points already say how many messages went out.
+            self.logger.debug(f"Direct message sent to user {user_id} successfully")
             return True
             
         except requests.exceptions.RequestException as e:

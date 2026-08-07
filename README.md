@@ -55,21 +55,18 @@ JIRA_USER_NAME=your-jira-username@company.com
 JIRA_API_TOKEN=your-jira-api-token
 
 # Jira Users Configuration (JSON format - single line)
+# Placeholders only. Real account ids and Slack ids belong in .env / repository
+# secrets, never in a tracked file.
 JIRA_USERS=[
   {
-    "name": "charlie.yang",
-    "jira_user_id": "6324466fc7601c8e4ac07788",
-    "slack_user_id": "U03H7Q5A0B0"
+    "name": "first.user",
+    "jira_user_id": "<atlassian-account-id>",
+    "slack_user_id": "<slack-member-id>"
   },
   {
-    "name": "eric.chien",
-    "jira_user_id": "629044a7cf01a10069af1962",
-    "slack_user_id": "U03H7Q5A0B1"
-  },
-  {
-    "name": "fiona.shih",
-    "jira_user_id": "630331b36acf9eeb443d6e27",
-    "slack_user_id": "U03H7Q5A0B2"
+    "name": "second.user",
+    "jira_user_id": "<atlassian-account-id>",
+    "slack_user_id": "<slack-member-id>"
   }
 ]
 
@@ -110,7 +107,7 @@ set the input.
 Each user in `JIRA_USERS` should contain:
 - `name`: Human-readable name for identification
 - `jira_user_id`: Jira user ID (from Jira profile or API)
-- `slack_user_id`: Slack user ID (e.g., U03H7Q5A0B0)
+- `slack_user_id`: Slack member ID (starts with `U`, found in the member's profile)
 
 #### Slack Bot Setup
 1. Create a Slack App at [https://api.slack.com/apps](https://api.slack.com/apps)
@@ -259,17 +256,17 @@ user" is weaker — a sprint boundary legitimately produces zero.
 
 ### Four of five Jira users cannot be messaged — open
 
-`slack_user_id` is an empty string for `eric.chien`, `fiona.shih`,
-`Broccoli Huang` and `Alex Wang` in `JIRA_USERS`, and `send_report` skips any user
-missing it. Even with a working token, only `charlie.yang` would receive a Jira
-report. `eric.chien`'s id is recoverable from his `LINEAR_USERS` entry; the other
-three need a Slack lookup. This is a secret/config edit, not a code change.
+`slack_user_id` is an empty string for four of the five entries in `JIRA_USERS`,
+and `send_report` skips any user missing it. Even with a working token, only one
+user would receive a Jira report. One of the four has an id recoverable from the
+matching `LINEAR_USERS` entry; the other three need a Slack lookup. This is a
+secret/config edit, not a code change.
 
-### harvey.liu is synced but never reported to — open
+### One synced owner is never reported to — open
 
-He owns 123 pages in the Jira Notion database yet is absent from `JIRA_USERS`.
-Adding him needs his Atlassian account id, which cannot be resolved while the
-credential above is dead: user search returns empty and his tickets 404.
+An owner of 123 pages in the Jira Notion database is absent from `JIRA_USERS`.
+Adding them needs their Atlassian account id, which cannot be resolved while the
+credential above is dead: user search returns empty and their tickets 404.
 
 ## Project Structure
 
