@@ -92,14 +92,17 @@ def main():
 
         # Process each user
         logger.info("Processing weekly reports for all users...")
+        sent_count = 0
         for user_config in LINEAR_USERS:
             owner = user_config.get("name")
             slack_user_id = user_config.get("slack_user_id")
             if not owner or not slack_user_id:
-                logger.warning(f"Skipping user {owner} - missing name or slack_user_id")
+                # The name is omitted deliberately: this fires on every run for a
+                # misconfigured entry, and the count is enough to notice it.
+                logger.warning("Skipping a user entry - missing name or slack_user_id")
                 continue
 
-            logger.info(f"Processing weekly report for user: {owner}")
+            logger.debug(f"Processing weekly report for user: {owner}")
 
             user_records = [
                 r for r in notion_records
@@ -120,11 +123,14 @@ def main():
 
             success = slack_manager.send_direct_message(message, slack_user_id, slack_token)
             if success:
-                logger.info(f"Weekly report sent successfully to {owner}")
+                sent_count += 1
+                logger.debug(f"Weekly report sent successfully to {owner}")
             else:
+                # Kept at WARNING with the name: a send failure is not routine, and
+                # knowing which recipient failed is the whole diagnostic value.
                 logger.warning(f"Failed to send weekly report to {owner}")
 
-        logger.info("Linear Weekly Report Bot completed successfully")
+        logger.info(f"Linear Weekly Report Bot completed successfully — {sent_count} report(s) sent")
 
     except Exception as e:
         error_message = (

@@ -69,7 +69,13 @@ class JiraManager:
         
         # Check if response has the expected format
         if "issues" not in data or not isinstance(data["issues"], list):
-            logger.error(f"Unexpected response format: {data}")
+            # Log the shape, not the payload — this branch used to dump the entire
+            # Jira response, every ticket and field in it.
+            logger.error(
+                f"Unexpected response format: {type(data).__name__}, "
+                f"top-level keys={sorted(data.keys()) if isinstance(data, dict) else 'n/a'}"
+            )
+            logger.debug(f"Unexpected Jira response body: {data}")
             raise ValueError("Response does not contain 'issues' list")
         
         # Get unique active sprints from the response
@@ -84,7 +90,8 @@ class JiraManager:
         # Log outputs
         logger.info("="*50)
         logger.debug(f"JQL Query: {jql}")
-        logger.info(f"Active Sprints: {sorted(active_sprints)}")
+        logger.info(f"Active Sprints: {len(active_sprints)}")
+        logger.debug(f"Active sprint names: {sorted(active_sprints)}")
         logger.info(f"Total Issues: {len(data['issues'])}")
         logger.info("="*50)
         
@@ -97,7 +104,9 @@ class JiraManager:
         for issue in data["issues"]:
             # Check if issue has the expected format
             if not isinstance(issue, dict) or "fields" not in issue:
-                logger.warning(f"Skipping issue with unexpected format: {issue}")
+                key = issue.get("key", "unknown") if isinstance(issue, dict) else "unknown"
+                logger.warning(f"Skipping issue with unexpected format: {key}")
+                logger.debug(f"Malformed issue object: {issue}")
                 continue
                 
             fields = issue["fields"]
