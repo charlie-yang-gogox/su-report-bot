@@ -32,15 +32,41 @@ class JiraManager:
             "Authorization": "Basic " + base64.b64encode(f"{user_name}:{token}".encode()).decode(),
             "Content-Type": "application/json"
         }
-        
+        self._assert_authenticated()
+
+    def _assert_authenticated(self):
+        """Fail loudly on a dead credential, before any search is trusted.
+
+        Jira answers an unauthorized *search* with 200 and an empty issue list, so
+        at the search endpoint a revoked token is indistinguishable from a quiet
+        sprint: `get_tickets()` raises nothing, no active sprint is found,
+        `send_report()` returns early and the run exits 0. That is how a dead
+        token starting 2026-07-23 went unnoticed for a month of "successful" runs.
+
+        `/rest/api/3/myself` DOES answer 401 under exactly this failure, which is
+        the only cheap signal that separates the two. Gating on "zero issues"
+        instead would be wrong — a sprint boundary legitimately produces zero.
+        """
+        response = requests.get(
+            "https://gogotech.atlassian.net/rest/api/3/myself", headers=self._headers
+        )
+        if response.status_code == 401:
+            raise RuntimeError(
+                "Jira authentication failed: /rest/api/3/myself returned 401. The "
+                "JIRA_API_TOKEN is expired or revoked. Searches would keep returning "
+                "0 issues and every run would report success while sending nothing, "
+                "so this fails the run instead. Mint a new token at "
+                "https://id.atlassian.com/manage-profile/security/api-tokens and "
+                "update the JIRA_API_TOKEN secret."
+            )
+        response.raise_for_status()
+
     def get_tickets(self):
-        """Get tickets from Jira API using custom JQL query"""
-        # TODO(jira-auth): this method cannot detect an authentication failure.
-        # Jira answers unauthorized searches with 200 and an empty issue list, so a
-        # dead token surfaces here as "no tickets" and the whole run reports success
-        # — it hid a week-long outage starting 2026-07-23. Add a /rest/api/3/myself
-        # preflight (it does 401) before trusting an empty result. See "Known
-        # issues" in README.md.
+        """Get tickets from Jira API using custom JQL query.
+
+        An empty result here means "no open sprint work", never "bad credential":
+        `_assert_authenticated()` has already ruled the latter out at construction.
+        """
         jira_api_url = "https://gogotech.atlassian.net/rest/api/3/search/jql"
         
         # Construct JQL query using user_ids

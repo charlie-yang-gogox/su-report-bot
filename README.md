@@ -209,10 +209,11 @@ A manual dispatch always runs, regardless of the gate.
 
 ## Known issues
 
-### Jira integration is unauthenticated — open, parked 2026-08-04
+### Jira integration was unauthenticated — resolved 2026-08-18
 
-The Jira half of the bot has produced nothing since **2026-07-23 22:25 UTC**. The
-Linear half is unaffected: separate credentials, running normally.
+The Jira half of the bot produced nothing between **2026-07-23 22:25 UTC** and
+2026-08-18. The Linear half was unaffected throughout: separate credentials.
+The diagnosis is kept below because the failure mode is worth recognising again.
 
 **Cause.** Jira rejects the configured `JIRA_USER_NAME` + `JIRA_API_TOKEN` pair.
 `GET /rest/api/3/myself` returns 401 with header `X-Seraph-Loginreason:
@@ -237,36 +238,45 @@ returns early, and the script exits 0. Every run since 2026-07-24 has reported
 success while sending nothing. The history lookups that return `None` on every run
 have the same single cause.
 
-**To unblock**
+**How it was resolved.** A live token replaced the dead one in the
+`JIRA_API_TOKEN` secret (and in the local `.env`). Measured against the same
+account before and after, through `JiraManager` itself:
 
-1. Mint a new API token at
-   <https://id.atlassian.com/manage-profile/security/api-tokens>. The old one
-   should show as expired or absent there, which independently confirms the cause.
-2. `gh secret set JIRA_API_TOKEN` — plus `JIRA_USER_NAME` if the account changes.
-3. Trigger a manual `daily` run and look for a non-zero `Retrieved N JIRA tickets`.
-4. Do not bother mining Codemagic's `mobile` environment group for a replacement:
-   pushes on 2026-07-29 and 2026-07-30 would have fired its push-triggered builds
-   and no Jira write followed, so its token is very likely the same dead one.
+| | dead token | live token |
+|---|---|---|
+| `GET /rest/api/3/myself` | 401 `AUTHENTICATED_FAILED` | 200, `charlie.yang`, active |
+| `POST /rest/api/3/search/jql` (what the bot sends) | 200, **0 issues** | 200, **8 issues** |
+| `GET /rest/api/3/issue/{key}` | 404 | 200 |
 
-**Fix to make once unblocked.** Have `JiraManager` call `/rest/api/3/myself` once
-at construction and fail loudly on anything but 200. That endpoint 401s under
-exactly this failure while the search endpoint does not, which converts a silent
-week into a same-day Slack error. Gating on "zero issues across every configured
-user" is weaker — a sprint boundary legitimately produces zero.
+**Why it cannot hide again.** `JiraManager._assert_authenticated()` now calls
+`/rest/api/3/myself` once at construction and raises on 401, so an expired
+credential fails the run — and the bot's Slack error notifier — on the first day
+instead of masquerading as an empty sprint. Gating on "zero issues across every
+configured user" would be weaker: a sprint boundary legitimately produces zero.
+Verified in both directions — the live token constructs and returns 8 issues, the
+dead token raises with the token-rotation instructions in the message.
+
+One note for the next rotation: do not bother mining Codemagic's `mobile`
+environment group for a replacement. Pushes on 2026-07-29 and 2026-07-30 would
+have fired its push-triggered builds and no Jira write followed, so its token is
+very likely the same dead one.
 
 ### Four of five Jira users cannot be messaged — open
 
 `slack_user_id` is an empty string for four of the five entries in `JIRA_USERS`,
-and `send_report` skips any user missing it. Even with a working token, only one
-user would receive a Jira report. One of the four has an id recoverable from the
-matching `LINEAR_USERS` entry; the other three need a Slack lookup. This is a
-secret/config edit, not a code change.
+and `send_report` skips any user missing it. The credential above is fixed, so
+this is now the binding constraint: only one user receives a Jira report. All four
+missing ids exist in the operator's own notes, so closing this is a one-line
+`gh secret set JIRA_USERS` — a secret/config edit, not a code change. It is left
+open deliberately: applying it resumes daily DMs to four other people, which is a
+decision for a human, not a side effect of a bug fix.
 
 ### One synced owner is never reported to — open
 
 An owner of 123 pages in the Jira Notion database is absent from `JIRA_USERS`.
-Adding them needs their Atlassian account id, which cannot be resolved while the
-credential above is dead: user search returns empty and their tickets 404.
+Adding them needs their Atlassian account id. This was blocked while the
+credential above was dead (user search returned empty and their tickets 404); with
+a live token it is now resolvable.
 
 ## Project Structure
 
