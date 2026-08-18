@@ -69,7 +69,9 @@ class NotionManager:
         # per archived ticket, which enumerates the whole key space on stdout.
         self.jira_fetch_failures = {}
         self.notion_headers = {
-            "Authorization": notion_token,
+            # Notion rejects a bare secret with 401 "API token is invalid." — the
+            # Bearer scheme is required. Tolerate a value that already carries it.
+            "Authorization": notion_token if notion_token.startswith("Bearer ") else f"Bearer {notion_token}",
             "Content-Type": "application/json",
             "Notion-Version": NOTION_API_VERSION
         }
